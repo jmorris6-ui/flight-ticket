@@ -46,9 +46,27 @@ const airborne = aircraft
   .sort((a, b) => a.dst - b.dst);
 
 const n = airborne[0];
+
+// Airlines broadcast ICAO-style callsigns (BAW614). Show the IATA-style form (BA614)
+// via adsbdb's free callsign lookup. If the lookup fails, show the raw callsign.
+async function displayCallsign(a) {
+  const raw = a.flight?.trim() || a.r || a.hex;
+  if (!a.flight?.trim()) return raw;
+  try {
+    const r = await fetch(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(raw)}`, {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (r.ok) {
+      const iata = (await r.json())?.response?.flightroute?.callsign_iata;
+      if (typeof iata === 'string' && /^[A-Z0-9]{3,8}$/.test(iata)) return iata;
+    }
+  } catch { /* fall through to raw callsign */ }
+  return raw;
+}
+
 const values = n
   ? {
-      data1: (n.flight?.trim() || n.r || n.hex).slice(0, 32),
+      data1: (await displayCallsign(n)).slice(0, 32),
       data2: (n.t ?? '').slice(0, 32) || null,
       data3: Math.round(n.alt_baro),
       data4: Math.round(n.dst * 10) / 10,
