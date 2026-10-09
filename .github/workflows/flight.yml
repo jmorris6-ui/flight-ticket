@@ -1,0 +1,32 @@
+name: Update TickrMeter flight display
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: flight-update
+  cancel-in-progress: false
+
+jobs:
+  push:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Push nearest aircraft to TickrMeter
+        env:
+          TICKRMETER_API_ORIGIN: ${{ secrets.TICKRMETER_API_ORIGIN }}
+          TICKRMETER_INSTALLATION_ID: ${{ secrets.TICKRMETER_INSTALLATION_ID }}
+          TICKRMETER_APP_TOKEN: ${{ secrets.TICKRMETER_APP_TOKEN }}
+          HOME_LAT: ${{ secrets.HOME_LAT }}
+          HOME_LON: ${{ secrets.HOME_LON }}
+          RADIUS_NM: "15"
+        run: node adsb-nearest.mjs
