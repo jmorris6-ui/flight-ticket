@@ -52,7 +52,7 @@ const n = airborne[0];
 // raw callsign and the aircraft type, so a lookup problem never blocks the update.
 async function lookup(a) {
   const raw = a.flight?.trim() || a.r || a.hex;
-  const out = { callsign: raw, route: null };
+  const out = { callsign: raw, route: null, airline: null };
   if (!a.flight?.trim()) return out;
   try {
     const r = await fetch(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(raw)}`, {
@@ -62,6 +62,8 @@ async function lookup(a) {
       const fr = (await r.json())?.response?.flightroute;
       const iata = fr?.callsign_iata;
       if (typeof iata === 'string' && /^[A-Z0-9]{3,8}$/.test(iata)) out.callsign = iata;
+      const code = fr?.airline?.iata;
+      if (/^[A-Z0-9]{2}$/.test(code ?? '')) out.airline = code;
       const from = fr?.origin?.iata_code, to = fr?.destination?.iata_code;
       if (/^[A-Z0-9]{3}$/.test(from ?? '') && /^[A-Z0-9]{3}$/.test(to ?? '')) out.route = `${from}-${to}`;
     }
@@ -76,9 +78,10 @@ const values = n
       data2: (info.route ?? n.t ?? '').slice(0, 32) || null,
       data3: Math.round(n.alt_baro),
       data4: Math.round(n.dst * 10) / 10,
+      data5: info.airline,
     }
   // Genuine observation: nothing airborne in range.
-  : { data1: 'NONE NEARBY', data2: null, data3: null, data4: null };
+  : { data1: 'NONE NEARBY', data2: null, data3: null, data4: null, data5: null };
 
 // 3. Publish one complete snapshot.
 const res = await fetch(`${origin}/api/apps/installations/${installationId.toLowerCase()}/snapshot`, {
