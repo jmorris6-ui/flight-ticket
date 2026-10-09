@@ -1,5 +1,9 @@
 name: Update TickrMeter flight display
 
+# GitHub's cron scheduler is best-effort and was not firing for this repo, so the
+# main path is a self-renewing loop: a manual/dispatched run pushes every 15 minutes
+# for ~5.5 hours, then dispatches its own replacement. The cron job below is only a
+# backup that does a single push.
 on:
   schedule:
     - cron: "7,22,37,52 * * * *"
@@ -7,21 +11,22 @@ on:
 
 permissions:
   contents: read
-
-concurrency:
-  group: flight-update
-  cancel-in-progress: false
+  actions: write
 
 jobs:
-  push:
+  once:
+    if: github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 2
+    concurrency:
+      group: flight-once
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: Push nearest aircraft to TickrMeter
+      - name: Push nearest aircraft
         env:
           TICKRMETER_API_ORIGIN: ${{ secrets.TICKRMETER_API_ORIGIN }}
           TICKRMETER_INSTALLATION_ID: ${{ secrets.TICKRMETER_INSTALLATION_ID }}
@@ -30,3 +35,34 @@ jobs:
           HOME_LON: ${{ secrets.HOME_LON }}
           RADIUS_NM: "15"
         run: node adsb-nearest.mjs
+
+  loop:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    concurrency:
+      group: flight-loop
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - name: Push every 15 minutes (~5.5 hours)
+        env:
+          TICKRMETER_API_ORIGIN: ${{ secrets.TICKRMETER_API_ORIGIN }}
+          TICKRMETER_INSTALLATION_ID: ${{ secrets.TICKRMETER_INSTALLATION_ID }}
+          TICKRMETER_APP_TOKEN: ${{ secrets.TICKRMETER_APP_TOKEN }}
+          HOME_LAT: ${{ secrets.HOME_LAT }}
+          HOME_LON: ${{ secrets.HOME_LON }}
+          RADIUS_NM: "15"
+        run: |
+          for i in $(seq 1 22); do
+            node adsb-nearest.mjs || echo "push failed (iteration $i); continuing"
+            sleep 900
+          done
+      - name: Start the next loop
+        if: success() || failure()   # not on cancel, so cancelling a run stops the chain
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run flight.yml --repo "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
