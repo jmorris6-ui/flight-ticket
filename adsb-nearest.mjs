@@ -48,14 +48,19 @@ try {
 // while a plane at 3,000 ft only counts within ~1.8 nm.
 const FT_PER_NM = 6076.12;
 const elevationDeg = a => Math.atan2(a.alt_baro / FT_PER_NM, a.dst) * 180 / Math.PI;
-const airborne = aircraft
-  .filter(a => typeof a.alt_baro === 'number' && a.alt_baro > 0
-    && typeof a.dst === 'number' && (a.seen_pos ?? 0) < 60
-    && !String(a.type ?? '').endsWith('_nt')
-    && elevationDeg(a) >= MIN_ELEVATION_DEG
-    && Math.hypot(a.dst, a.alt_baro / FT_PER_NM) <= MAX_SLANT_NM)
-  // nearest in 3D (straight-line) distance
-  .sort((a, b) => Math.hypot(a.dst, a.alt_baro / FT_PER_NM) - Math.hypot(b.dst, b.alt_baro / FT_PER_NM));
+const slant = a => Math.hypot(a.dst, a.alt_baro / FT_PER_NM);
+const candidates = aircraft.filter(a => typeof a.alt_baro === 'number' && a.alt_baro > 0
+  && typeof a.dst === 'number' && (a.seen_pos ?? 0) < 60
+  && !String(a.type ?? '').endsWith('_nt'));
+// Nearest in 3D (straight-line) distance, preferring aircraft you could actually see.
+const byNearest = (x, y) => slant(x) - slant(y);
+const visible = candidates
+  .filter(a => elevationDeg(a) >= MIN_ELEVATION_DEG && slant(a) <= MAX_SLANT_NM)
+  .sort(byNearest);
+// The display only refreshes every 15 minutes, so never leave it blank: if nothing
+// is visible, fall back to the nearest airborne aircraft in range (the details line
+// shows its altitude and distance, so a low/distant one is obvious).
+const airborne = visible.length ? visible : candidates.sort(byNearest);
 
 const n = airborne[0];
 
@@ -111,7 +116,7 @@ function buildValues(a, info) {
 const values = n
   ? buildValues(n, await lookup(n))
   // Genuine observation: nothing airborne in range.
-  : { data1: 'NOTHING IN SIGHT', data2: null, data5: null, data6: null };
+  : { data1: 'NO AIRCRAFT NEARBY', data2: null, data5: null, data6: null };
 
 // 3. Publish one complete snapshot.
 const res = await fetch(`${origin}/api/apps/installations/${installationId.toLowerCase()}/snapshot`, {
