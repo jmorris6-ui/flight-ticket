@@ -2,7 +2,7 @@
 // Pushes the nearest airborne aircraft (from adsb.fi open data) to a TickrMeter
 // hosted display. Outbound requests only. Node 20+, no dependencies.
 //
-// Display fields: data1 callsign, data2 aircraft type, data3 altitude (ft), data4 distance (nm)
+// Display fields: data1 airline + flight, data2 route, data5 airline code (LED rule), data6 details
 //
 // Env (set as secrets, never in this file):
 //   TICKRMETER_API_ORIGIN, TICKRMETER_INSTALLATION_ID, TICKRMETER_APP_TOKEN
@@ -47,12 +47,14 @@ const airborne = aircraft
 
 const n = airborne[0];
 
-// Airlines broadcast ICAO-style callsigns (BAW614). adsbdb's free lookup gives the
-// IATA-style form (BA614) and, where known, the route. Any failure falls back to the
-// raw callsign and the aircraft type, so a lookup problem never blocks the update.
+const clean = v => String(v ?? '').replace(/[\u0000-\u001f\u007f\ufffe\uffff]/g, '').trim();
+
+// adsbdb's free callsign lookup gives the IATA-style flight code (BA614), airline
+// name and route. Any failure falls back to the raw callsign / aircraft type, so a
+// lookup problem never blocks the update.
 async function lookup(a) {
   const raw = a.flight?.trim() || a.r || a.hex;
-  const out = { callsign: raw, route: null, airline: null };
+  const out = { callsign: raw, airlineName: null, airlineCode: null, from: null, to: null, fromIata: null, toIata: null };
   if (!a.flight?.trim()) return out;
   try {
     const r = await fetch(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(raw)}`, {
@@ -62,26 +64,42 @@ async function lookup(a) {
       const fr = (await r.json())?.response?.flightroute;
       const iata = fr?.callsign_iata;
       if (typeof iata === 'string' && /^[A-Z0-9]{3,8}$/.test(iata)) out.callsign = iata;
+      out.airlineName = clean(fr?.airline?.name) || null;
       const code = fr?.airline?.iata;
-      if (/^[A-Z0-9]{2}$/.test(code ?? '')) out.airline = code;
-      const from = fr?.origin?.iata_code, to = fr?.destination?.iata_code;
-      if (/^[A-Z0-9]{3}$/.test(from ?? '') && /^[A-Z0-9]{3}$/.test(to ?? '')) out.route = `${from}-${to}`;
+      if (/^[A-Z0-9]{2}$/.test(code ?? '')) out.airlineCode = code;
+      out.from = clean(fr?.origin?.municipality) || null;
+      out.to = clean(fr?.destination?.municipality) || null;
+      out.fromIata = clean(fr?.origin?.iata_code) || null;
+      out.toIata = clean(fr?.destination?.iata_code) || null;
     }
   } catch { /* fall through */ }
   return out;
 }
 
-const info = n ? await lookup(n) : null;
+function buildValues(a, info) {
+  // Top line: "Jet2 \u00b7 LS51E" (airline name + flight code), or just the callsign.
+  let top = info.airlineName ? `${info.airlineName} \u00b7 ${info.callsign}` : info.callsign;
+  if (top.length > 32) top = info.callsign;
+  // Middle: city names, or airport codes if too long, or aircraft description if no route.
+  let route = info.from && info.to ? `${info.from} to ${info.to}` : null;
+  if (route && route.length > 32 && info.fromIata && info.toIata) route = `${info.fromIata} to ${info.toIata}`;
+  if (!route || route.length > 32) route = clean(a.desc || a.t) || 'Unknown route';
+  // Bottom: type, altitude with thousands separator, distance in statute miles.
+  const miles = Math.round(a.dst * 1.15078 * 10) / 10;
+  const details = [clean(a.t), `${Math.round(a.alt_baro).toLocaleString('en-GB')} ft`, `${miles} mi`]
+    .filter(Boolean).join(' \u00b7 ');
+  return {
+    data1: top.slice(0, 32),
+    data2: route.slice(0, 32),
+    data5: info.airlineCode,
+    data6: details.slice(0, 32),
+  };
+}
+
 const values = n
-  ? {
-      data1: info.callsign.slice(0, 32),
-      data2: (info.route ?? n.t ?? '').slice(0, 32) || null,
-      data3: Math.round(n.alt_baro),
-      data4: Math.round(n.dst * 10) / 10,
-      data5: info.airline,
-    }
+  ? buildValues(n, await lookup(n))
   // Genuine observation: nothing airborne in range.
-  : { data1: 'NONE NEARBY', data2: null, data3: null, data4: null, data5: null };
+  : { data1: 'NONE NEARBY', data2: null, data5: null, data6: null };
 
 // 3. Publish one complete snapshot.
 const res = await fetch(`${origin}/api/apps/installations/${installationId.toLowerCase()}/snapshot`, {

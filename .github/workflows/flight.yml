@@ -58,6 +58,7 @@ jobs:
           RADIUS_NM: "15"
         run: |
           for i in $(seq 1 22); do
+            git pull -q --ff-only origin "$GITHUB_REF_NAME" || echo "git pull failed; using current script"
             node adsb-nearest.mjs || echo "push failed (iteration $i); continuing"
             sleep 900
           done
