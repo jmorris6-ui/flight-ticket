@@ -33,7 +33,6 @@ jobs:
           TICKRMETER_APP_TOKEN: ${{ secrets.TICKRMETER_APP_TOKEN }}
           HOME_LAT: ${{ secrets.HOME_LAT }}
           HOME_LON: ${{ secrets.HOME_LON }}
-          RADIUS_NM: "15"
         run: node adsb-nearest.mjs
 
   loop:
@@ -55,7 +54,6 @@ jobs:
           TICKRMETER_APP_TOKEN: ${{ secrets.TICKRMETER_APP_TOKEN }}
           HOME_LAT: ${{ secrets.HOME_LAT }}
           HOME_LON: ${{ secrets.HOME_LON }}
-          RADIUS_NM: "15"
         run: |
           for i in $(seq 1 22); do
             git pull -q --ff-only origin "$GITHUB_REF_NAME" || echo "git pull failed; using current script"

@@ -6,11 +6,14 @@
 //
 // Env (set as secrets, never in this file):
 //   TICKRMETER_API_ORIGIN, TICKRMETER_INSTALLATION_ID, TICKRMETER_APP_TOKEN
-// Optional: HOME_LAT, HOME_LON (default Crowthorne), RADIUS_NM (default 15)
+// Optional: HOME_LAT, HOME_LON (default Crowthorne),
+//   MIN_ELEVATION_DEG (default 15): only aircraft at least this high above your horizon
+//   MAX_SLANT_NM (default 15): straight-line range beyond which a plane is too small to see
 
 const LAT = Number(process.env.HOME_LAT ?? 51.3667);
 const LON = Number(process.env.HOME_LON ?? -0.8);
-const RADIUS_NM = Number(process.env.RADIUS_NM ?? 15);
+const MAX_SLANT_NM = Number(process.env.MAX_SLANT_NM ?? 15);
+const MIN_ELEVATION_DEG = Number(process.env.MIN_ELEVATION_DEG ?? 15);
 
 const origin = process.env.TICKRMETER_API_ORIGIN;
 const installationId = process.env.TICKRMETER_INSTALLATION_ID;
@@ -20,15 +23,15 @@ if (!origin?.startsWith('https://') || !/^[a-fA-F0-9]{24}$/.test(installationId 
   console.error('Missing or invalid TickrMeter connection settings.');
   process.exit(1);
 }
-if (![LAT, LON, RADIUS_NM].every(Number.isFinite)) {
-  console.error('Invalid HOME_LAT, HOME_LON or RADIUS_NM.');
+if (![LAT, LON, MAX_SLANT_NM, MIN_ELEVATION_DEG].every(Number.isFinite)) {
+  console.error('Invalid HOME_LAT, HOME_LON, MAX_SLANT_NM or MIN_ELEVATION_DEG.');
   process.exit(1);
 }
 
 // 1. Read live traffic. On any failure, exit WITHOUT publishing (never fake data).
 let aircraft;
 try {
-  const res = await fetch(`https://opendata.adsb.fi/api/v2/lat/${LAT}/lon/${LON}/dist/${RADIUS_NM}`, {
+  const res = await fetch(`https://opendata.adsb.fi/api/v2/lat/${LAT}/lon/${LON}/dist/${MAX_SLANT_NM}`, {
     signal: AbortSignal.timeout(10000),
   });
   if (!res.ok) throw new Error(`adsb.fi HTTP ${res.status}`);
@@ -38,12 +41,21 @@ try {
   process.exit(1);
 }
 
-// 2. Nearest airborne aircraft with a fresh position (ignores ground traffic at Heathrow etc.)
+// 2. Nearest aircraft you could actually see: airborne, fresh position, at least
+// MIN_ELEVATION_DEG above your horizon (clears rooftops and trees) and within
+// MAX_SLANT_NM straight-line (any further is just a speck). Elevation = atan(height / ground
+// distance), so a 35,000 ft jet qualifies from ~21 degrees (about 13 nm away on the ground)
+// while a plane at 3,000 ft only counts within ~1.8 nm.
+const FT_PER_NM = 6076.12;
+const elevationDeg = a => Math.atan2(a.alt_baro / FT_PER_NM, a.dst) * 180 / Math.PI;
 const airborne = aircraft
   .filter(a => typeof a.alt_baro === 'number' && a.alt_baro > 0
     && typeof a.dst === 'number' && (a.seen_pos ?? 0) < 60
-    && !String(a.type ?? '').endsWith('_nt'))
-  .sort((a, b) => a.dst - b.dst);
+    && !String(a.type ?? '').endsWith('_nt')
+    && elevationDeg(a) >= MIN_ELEVATION_DEG
+    && Math.hypot(a.dst, a.alt_baro / FT_PER_NM) <= MAX_SLANT_NM)
+  // nearest in 3D (straight-line) distance
+  .sort((a, b) => Math.hypot(a.dst, a.alt_baro / FT_PER_NM) - Math.hypot(b.dst, b.alt_baro / FT_PER_NM));
 
 const n = airborne[0];
 
@@ -99,7 +111,7 @@ function buildValues(a, info) {
 const values = n
   ? buildValues(n, await lookup(n))
   // Genuine observation: nothing airborne in range.
-  : { data1: 'NONE NEARBY', data2: null, data5: null, data6: null };
+  : { data1: 'NOTHING IN SIGHT', data2: null, data5: null, data6: null };
 
 // 3. Publish one complete snapshot.
 const res = await fetch(`${origin}/api/apps/installations/${installationId.toLowerCase()}/snapshot`, {
