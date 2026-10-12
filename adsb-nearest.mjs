@@ -71,7 +71,7 @@ const clean = v => String(v ?? '').replace(/[\u0000-\u001f\u007f\ufffe\uffff]/g,
 // lookup problem never blocks the update.
 async function lookup(a) {
   const raw = a.flight?.trim() || a.r || a.hex;
-  const out = { callsign: raw, airlineName: null, airlineCode: null, from: null, to: null, fromIata: null, toIata: null };
+  const out = { callsign: raw, airlineName: null, airlineCode: null, from: null, to: null, fromIata: null, toIata: null, fromPos: null, toPos: null };
   if (!a.flight?.trim()) return out;
   try {
     const r = await fetch(`https://api.adsbdb.com/v0/callsign/${encodeURIComponent(raw)}`, {
@@ -88,9 +88,29 @@ async function lookup(a) {
       out.to = clean(fr?.destination?.municipality) || null;
       out.fromIata = clean(fr?.origin?.iata_code) || null;
       out.toIata = clean(fr?.destination?.iata_code) || null;
+      const pos = p => (Number.isFinite(Number(p?.latitude)) && Number.isFinite(Number(p?.longitude)))
+        ? { lat: Number(p.latitude), lon: Number(p.longitude) } : null;
+      out.fromPos = pos(fr?.origin);
+      out.toPos = pos(fr?.destination);
     }
   } catch { /* fall through */ }
   return out;
+}
+
+// adsbdb maps a callsign to a route, but airlines reuse callsigns across routes and days, so
+// the stored route can be stale or wrong. Only trust it if the aircraft is actually near the
+// origin-destination path: detour = dist(origin, plane) + dist(plane, dest) - dist(origin, dest).
+const NM_PER_RAD = 3440.065;
+const rad = d => d * Math.PI / 180;
+const gcNm = (p, q) => 2 * NM_PER_RAD * Math.asin(Math.sqrt(
+  Math.sin(rad(q.lat - p.lat) / 2) ** 2 +
+  Math.cos(rad(p.lat)) * Math.cos(rad(q.lat)) * Math.sin(rad(q.lon - p.lon) / 2) ** 2));
+function routeIsPlausible(info, a) {
+  if (!info.fromPos || !info.toPos || !Number.isFinite(a.lat) || !Number.isFinite(a.lon)) return false;
+  const here = { lat: a.lat, lon: a.lon };
+  const direct = gcNm(info.fromPos, info.toPos);
+  const detour = gcNm(info.fromPos, here) + gcNm(here, info.toPos) - direct;
+  return detour <= Math.max(100, 0.1 * direct);
 }
 
 function buildValues(a, info) {
@@ -98,8 +118,9 @@ function buildValues(a, info) {
   let top = info.airlineName ? `${info.airlineName} \u00b7 ${info.callsign}` : info.callsign;
   if (top.length > 32) top = info.callsign;
   // Middle: city names, or airport codes if too long, or aircraft description if no route.
-  let route = info.from && info.to ? `${info.from} to ${info.to}` : null;
-  if (route && route.length > 32 && info.fromIata && info.toIata) route = `${info.fromIata} to ${info.toIata}`;
+  const trusted = routeIsPlausible(info, a);
+  let route = trusted && info.from && info.to ? `${info.from} to ${info.to}` : null;
+  if (route && route.length > 32 && trusted && info.fromIata && info.toIata) route = `${info.fromIata} to ${info.toIata}`;
   if (!route || route.length > 32) route = clean(a.desc || a.t) || 'Unknown route';
   // Bottom: type, altitude with thousands separator, distance in statute miles.
   const miles = Math.round(a.dst * 1.15078 * 10) / 10;
